@@ -1,6 +1,8 @@
 package de.mimoja;
 
 
+import jdk.nashorn.internal.ir.Block;
+
 import java.util.*;
 
 class MDDocument{
@@ -20,25 +22,30 @@ class MDDocument{
 
         mDocumentRoot = new DocumentParser();
 
-        for(int i = 0; i < size ; i++) {
+        while(!lines.isEmpty()) {
             HeadlineParser headlineParser = new HeadlineParser();
             IndentCodeBlockParser indentCodeBlockParser = new IndentCodeBlockParser();
             ThematicBreakParser thematicBreakParser = new ThematicBreakParser();
             SetextHeadlineParser setextHeadlineParser = new SetextHeadlineParser();
             setextHeadlineParser.parent = mDocumentRoot.getLastOpen();
+            CodeBlockParser codeBlockParser = new CodeBlockParser();
             TextParser textParser = new TextParser();
             EmptyLineParser emptyLineParser = new EmptyLineParser();
+            BlockQuoteContainerParser blockQuoteContainerParser = new BlockQuoteContainerParser();
 
-                 if(headlineParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(headlineParser);}
+                 if(blockQuoteContainerParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(blockQuoteContainerParser);}
+            else if(headlineParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(headlineParser);}
             else if(setextHeadlineParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(setextHeadlineParser);}
             else if(thematicBreakParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(thematicBreakParser);}
             else if(emptyLineParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(emptyLineParser);}
             else if(indentCodeBlockParser.parse(612, lines)){mDocumentRoot.getLastOpen().addChild(indentCodeBlockParser);}
+            else if(codeBlockParser.parse(123, lines)){mDocumentRoot.getLastOpen().addChild(codeBlockParser);}
             else if(textParser.parse(512, lines)){mDocumentRoot.getLastOpen().addChild(textParser);}
             else {
                 System.out.println("Textparser rejected. This should never happen!");
                 lines.removeFirst();
             }
+
         }
 
         mDocumentRoot.print();
@@ -121,12 +128,6 @@ abstract class AParser {
     abstract boolean parse(int currentPosition, LinkedList<String> lines);
 
     protected char readChar(LinkedList<String> lines){
-        char current = peakChar(lines);
-        currentPosition++;
-        return current;
-    }
-
-    protected char peakChar(LinkedList<String> lines){
 
         if(currentLine >= lines.size()){
             return '\0';
@@ -135,10 +136,14 @@ abstract class AParser {
         String line = lines.get(currentLine);
         if(currentPosition >= line.length()){
             currentLine++;
+            currentPosition = 0;
             return '\n';
         }
 
-        return line.charAt(currentPosition);
+        char current =  line.charAt(currentPosition);
+        currentPosition++;
+
+        return current;
     }
 
 }
@@ -148,6 +153,91 @@ class DocumentParser extends AParser {
     @Override
     boolean parse(int currentPosition, LinkedList<String> lines) {
         return false;
+    }
+}
+
+class BlockQuoteContainerParser extends AParser {
+
+    private enum State{
+        Indentation,
+        Content,
+        NextLine,
+        Accept,
+        Reject,
+    }
+
+    private State currentState = State.Indentation;
+
+
+    public int indentation = 0;
+    public int level = 0;
+
+    private StringBuilder contentBuilder;
+
+    public String content;
+
+    public BlockQuoteContainerParser(){
+        super();
+        contentBuilder = new StringBuilder();
+    }
+
+    @Override
+    boolean parse(int currentPosition, LinkedList<String> lines) {
+        char nextChar;
+        while(true) {
+            switch (currentState) {
+                case Indentation:
+                    nextChar = readChar(lines);
+                    if(nextChar == ' '){
+                        indentation++;
+                        if(indentation >= 4){
+                            currentState = State.Reject;
+                        }
+                    }else if(nextChar == '>'){
+                        currentState = State.Content;
+                    }else{
+                        currentState = State.Reject;
+                    }
+                    break;
+                case Content:
+                    nextChar = readChar(lines);
+                    if (nextChar == '\n') {
+                        currentState = State.NextLine;
+                    } else {
+                        contentBuilder.append(nextChar);
+                    }
+                    break;
+                case NextLine:
+                    // Ends with a empty line
+                    LinkedList nextLine = (LinkedList) lines.clone();
+                    nextLine.removeFirst();
+                    if(new EmptyLineParser().parse(0, nextLine)){
+                        currentState = State.Accept;
+                        break;
+                    }
+                    nextChar = readChar(lines);
+
+                    if(nextChar == '-' || nextChar == '\n' || nextChar == '\0'){
+                        currentState = State.Accept;
+                    }else{
+                        currentState = State.Content;
+                    }
+                    break;
+                case Accept:
+                    this.start = currentPosition;
+                    this.end = this.currentPosition;
+                    content = contentBuilder.toString();
+                    System.out.println("[Blockquote] Indentation: "+indentation+" Level: "+level+" Content: \""+content+"\"");
+                    while(currentLine >= 0) {
+                        lines.removeFirst();
+                        currentLine--;
+                    }
+                    open = false;
+                    return true;
+                case Reject:
+                    return false;
+            }
+        }
     }
 }
 
@@ -201,7 +291,7 @@ class IndentCodeBlockParser extends AParser {
                     open = false;
                     return true;
                 case Reject:
-                    //System.out.println("[Code] Reject!");
+                    //  System.out.println("[Code] Reject!");
                     return false;
             }
         }
@@ -235,7 +325,7 @@ class EmptyLineParser extends AParser{
                     }
                     break;
                 case Accept:
-                    System.out.println("[EmptyLine] Space: "+whitespaceCount);
+                    System.out.println("[EmptyLine] Space: "+whitespaceCount)   ;
                     lines.removeFirst();
                     open = false;
                     return true;
@@ -291,7 +381,6 @@ class TextParser extends AParser {
                         currentState = State.StripAfter;
                     } else if (nextChar == '\n') {
                         currentState = State.Accept;
-                        contentEnd = this.currentPosition-1;
                     } else {
                         contentEnd = this.currentPosition;
                     }
@@ -310,6 +399,148 @@ class TextParser extends AParser {
                     this.end = this.currentPosition;
                     content = lines.removeFirst().substring(contentStart, contentEnd);
                     System.out.println("[Text] Indentation: "+indentation+" Content: \""+content+"\"");
+                    open = false;
+                    return true;
+                case Reject:
+                    return false;
+            }
+        }
+    }
+}
+
+
+class CodeBlockParser extends AParser {
+    private enum State{
+        Indentation,
+        Counting,
+        InfoString,
+        Content,
+        StripWhitespace,
+        EndCounting,
+        Accept,
+        Reject,
+    };
+    State currentState = State.Indentation;
+
+    List<Character> breakingCharacters;
+
+    public CodeBlockParser(){
+        breakingCharacters = new LinkedList<>();
+        char[] chars ={'~', '`'};
+        for(char c : chars)
+            breakingCharacters.add(c);
+    }
+    int indentation = 0;
+    int codeItemCounter = 0;
+    Character codeItem = null;
+
+    public String content;
+
+    private int infoStringStart;
+    private int infoStringEnd;
+
+    public String infoString;
+
+    @Override
+    boolean parse(int currentPosition, LinkedList<String> lines) {
+        char nextChar;
+        StringBuilder contentBuilder = new StringBuilder();
+        int whitespaceToConsume = 0;
+        int itemsToConsume = 0;
+
+        while(true) {
+            switch (currentState) {
+                case Indentation:
+                    nextChar = readChar(lines);
+                    if(nextChar == ' '){
+                        indentation++;
+                        if(indentation >= 4){
+                            currentState = State.Reject;
+                        }
+                    }else if(breakingCharacters.contains(nextChar)){
+                        codeItem = nextChar;
+                        codeItemCounter++;
+                        currentState = State.Counting;
+                    }else{
+                        currentState = State.Reject;
+                    }
+                    break;
+                case Counting:
+                    nextChar = readChar(lines);
+                    if(codeItem.equals(nextChar)) {
+                        codeItemCounter++;
+                    } else {
+                        if (codeItemCounter >= 3) {
+                            if(nextChar == '\n'){
+                                whitespaceToConsume = indentation;
+                                currentState = State.StripWhitespace;
+                            } else if(nextChar != ' '){
+                                infoStringStart = this.currentPosition - 1;
+                                currentState = State.InfoString;
+                            }
+                        } else {
+                            currentState = State.Reject;
+                        }
+                    }
+                    break;
+                case InfoString:
+                    nextChar = readChar(lines);
+                    if(codeItem.equals(nextChar)) {
+                        currentState = State.Reject;
+                    } else if (nextChar == '\n'){
+                        infoString = lines.getFirst().substring(infoStringStart, infoStringEnd);
+                        whitespaceToConsume = indentation;
+                        currentState = State.StripWhitespace;
+                    } else {
+                        infoStringEnd = this.currentPosition;
+                    }
+                    break;
+                case Content:
+                    nextChar = readChar(lines);
+                    if(nextChar == '\n') {
+                        whitespaceToConsume = indentation;
+                        currentState = State.StripWhitespace;
+                    }
+                    if(codeItem.equals(nextChar)){
+                        itemsToConsume = codeItemCounter;
+                        itemsToConsume--;
+                        currentState = State.EndCounting;
+                    }
+                    contentBuilder.append(nextChar);
+                    break;
+                case StripWhitespace:
+                    nextChar = readChar(lines);
+                    if(nextChar == ' ' && whitespaceToConsume != 0) {
+                        whitespaceToConsume--;
+                    } else {
+                        contentBuilder.append(nextChar);
+                        currentState = State.Content;
+                    }
+                    break;
+                case EndCounting:
+                    nextChar = readChar(lines);
+                    if(codeItem.equals(nextChar)){
+                        itemsToConsume--;
+                        if(itemsToConsume == 0){
+                            currentState = State.Content;
+                        }
+                    } else {
+                        contentBuilder.append(nextChar);
+                        currentState = State.Content;
+                    }
+                case Accept:
+                    this.start = currentPosition;
+                    this.end = this.currentPosition;
+                    content = contentBuilder.toString();
+                    content = content.substring(0, content.length()-codeItemCounter);
+                    System.out.println("[Code] Indentation: "+indentation+" Symbol: '"+codeItem+"' BreakItems: "+codeItemCounter);
+                    for(String line : content.split("\n")){
+                        System.out.println("[Code] \""+line+"\"");
+                    }
+                    while(currentLine >= 0) {
+                        lines.removeFirst();
+                        currentLine--;
+                    }
                     open = false;
                     return true;
                 case Reject:
@@ -567,7 +798,7 @@ public class Main {
     public static void main(String[] args) {
         // HeadlineTest
         new MDDocument(""+
-                "# Headline\n"                       + // [Headline] "Headline"
+                /*"# Headline\n"                       + // [Headline] "Headline"
                 "## SecondLevelHeadline\n"           + // [Headline] "SecondLevelHeadline" + level == 2
                 "## ClosedHeadline ##\n"             + // [Headline] "ClosedHeadline"
                 "##      Stripped Whitespace     \n" + // [Headline] "Stripped Whitespace"
@@ -607,7 +838,12 @@ public class Main {
 
                 " \n"                                + // Emptyline Space = 1
                 "    \n"                             + // Emptyline Space = 4
-
+                " ```test\n content\n```\n"          + // [Code] Infostring = test content = content
+                " ```unallowed`char\n test ```\n"    + // false;
+                " ````\n 4 backticks\n````\n"        + // [Code] content = 4 backticks breakitems = 4
+                "~~~\nTilde\n~~~\n"                  + // Code content = Tilde
+                "~~~ \nEmpty infostring\n~~~\n"      + // Code content = Tilde*/
+                "> test\n \n"                         + // Blockquote test
         "");
     }
 }
